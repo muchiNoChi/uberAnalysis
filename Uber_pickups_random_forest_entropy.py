@@ -1,7 +1,13 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
+# In[306]:
+
+
+get_ipython().run_line_magic('matplotlib', 'inline')
+
+
+# In[4]:
 
 
 import numpy as np
@@ -15,176 +21,108 @@ from datetime import datetime
 # # Loading the data
 
 # For this problem '*Uber Pickups*' dataset was chosen. It represents the data for different New York Uber pickups.
-# Our goal is, by analysing this dataset, to predict the amount of pickups for each borough presented.
+# Our goal is, by analysing this dataset, to predict the amount of pickups for each line presented.
 
-# In[ ]:
+# In[5]:
 
 
 X_data = pd.read_csv('data/trainX.csv')
 Y_data = pd.read_csv('data/trainY.csv')
 
 
-# In[ ]:
+# In[6]:
 
 
 X_data.head()
 
 
-# For a solution using scikit-learn we considered 3 types of classifiers: *RandomForest*, *DecisionTree* and *LogisticRegression*.
-# 
-# (See solution using scikit-learn for details)
-# 
-# The following results (in points) were achieved by fitting (after applying Grid Search with different parameters on those classifiers (specific solvers were chosen)):
-# 
-# *   RandomForest (entropy) - **1246401.3858999142**
-# *   DecisionTree (gini) - **1245676.0787156357**
-# *   LogisticRegression (newton-cg) - **1193406.0331829898**
-# 
-# According to these results, the best algorithm to apply on our dataset (between those 3 been tried) is ***RandomForest***.
-# It will be implemented in this work to be then applied.
+# Decision Tree Regressor algorithm will be implemented here to predict the amount of pickups.
 
 # # Preparing the data
 
-# First, we don't need a pickup **id**.
+# In[237]:
 
-# In[ ]:
 
+def transform_date(dataset):
+    def str_to_secs(s):
+        time = datetime.strptime(s,"%Y-%m-%d %H:%M:%S").time()
+        return time.second+time.minute*60+time.hour*3600
+    def str_to_hour(s):
+        return datetime.strptime(s,"%Y-%m-%d %H:%M:%S").time().hour
+    data = dataset.copy()
+    data.pickup_dt = data.pickup_dt.apply(str_to_hour)
+    return data
 
-X = pd.DataFrame(X_data, copy=True)
-del X['id']
 
+# In[330]:
 
-# Second, we'll transform **pickup_dt** feature into *numeric* type (as done in a solution using scikit-learn).
 
-# In[ ]:
+def apply_one_hot_encoding(dataset, attr):
+    # didn't use it
+    data = pd.DataFrame(dataset, copy=true)
+    uniques = set(data[attr].values)
+    uniques.remove('nan')
+    for value in uniques:
+        new_value = f'{attr}_{value}'
+        data[new_value] = (data[attr] == value)
+    del data[attr]
+    return data
 
 
-X['pickup_dt'] = X['pickup_dt'].apply(
-    lambda x: datetime.strptime(x,"%Y-%m-%d %H:%M:%S").time()
-).apply(
-    lambda x: x.second+x.minute*60+x.hour*3600
-)
+# In[331]:
 
 
-# Third, let's transform **holiday** char typed feature into *binary* typed
+def bin_data(dataset, column):
+# data binning for categorizing continous values:
 
-# In[ ]:
+    bins_map = {}
 
+    idxs, bins = pd.cut(dataset[column], bins=20, labels=False, retbins=True)
 
-X['hday'] = X['hday'].apply(lambda x: 0 if x == 'N' else 1)
+    for bin_num, border_val in enumerate(bins):
+        if bin_num == len(bins) - 1:
+            continue
+        else:
+            high = bins[bin_num + 1]
+        bins_map[bin_num] = {
+            'low': border_val,
+            'high': high,
+            #'amount': amounts[bin_num]
+        }
+    return idxs, bins_map
 
 
-# In[ ]:
+# In[240]:
 
 
-X.head()
+def prepare_data(dataset):
+    dataset_copy = dataset.fillna(value={'borough': 'Unknown'})
+    dataset_copy = dataset_copy.drop('id', axis='columns')
+    dataset_copy = transform_date(dataset_copy)
+    return dataset_copy
 
 
-# Now let's normalize the data. We will use numpy's *linalg.norm()* function. It won't be implemented here as it's big enough, and you always can take a look at the source code via [this link](https://github.com/numpy/numpy/blob/v1.15.1/numpy/linalg/linalg.py#L2203-L2440).
+# In[241]:
 
-# In[ ]:
 
+X_prepared = prepare_data(X_data)
 
-def normalize(v):
-  norm = np.linalg.norm(v)
-  if norm == 0:
-    return v
-  return v / norm
 
+# In[242]:
 
-# In[ ]:
 
+merged = pd.merge(X_data, Y_data, on='id')
+Y = merged['pickups']
 
-for column_name in ['pickup_dt', 'spd', 'vsb', 'temp', 'dewp', 
-                    'slp', 'pcp01', 'pcp06', 'pcp24', 'sd']:
-  X[column_name] = normalize(X[column_name])
 
-
-# In[ ]:
-
-
-X.head()
-
-
-# Data-binning for categorizing continous values:
-
-# In[ ]:
-
-
-for column_name in ['pickup_dt', 'spd', 'vsb', 'temp', 'dewp', 
-                    'slp', 'pcp01', 'pcp06', 'pcp24', 'sd']:
-    bins = []
-#     we will create 20 bins to try
-    step = (X[column_name].max() - X[column_name].min()) / 20
-    for i in range(21):
-        bins.append(X[column_name].min() + (step * i))
-    binned_column_name = '{}_binned'.format(column_name)
-    X[binned_column_name] = pd.cut(X[column_name], bins=bins)
-X.head()
-
-
-# Let's aggregate amount of values for bins and group them by size:
-
-# In[ ]:
-
-
-for column_name in ['pickup_dt', 'spd', 'vsb', 'temp', 'dewp', 
-                    'slp', 'pcp01', 'pcp06', 'pcp24', 'sd']:
-    bins = []
-    step = (X[column_name].max() - X[column_name].min()) / 20
-    for i in range(21):
-        bins.append(X[column_name].min() + (step * i))
-    binned = pd.cut(X[column_name], bins=bins).value_counts()
-    print(binned)
-
-
-# As it was done in a solution using scikit-learn, let's apply *one-hot encoding* for transforming **borough** feature data:
-
-# In[ ]:
-
-
-set(X['borough'].values)
-
-
-# In[ ]:
-
-
-for value in set(X['borough'].values):
-    new_value = 'borough_{}'.format(value)
-    X[new_value] = (X['borough'] == value)
-
-
-# In[ ]:
-
-
-del X['borough']
-del X['borough_nan']
-X.head()
-
-
-# Let's prepare the vector of answers: 
-
-# In[ ]:
-
-
-Y_data.head()
-
-
-# In[ ]:
-
-
-merged = pd.merge(X_data, Y_data, on=['id'])
-Y = merged['pickups'].values
-
-
-# Now let's split our training dataset into **N** pieces. We will then train **N** *decision trees* on each subset respectively. This will allow us to create an *ensemble* to improve results and minimize the possibility of overfitting.
+# Splitting dataset into 10 equal pieces:
 # 
-# We'll try to take **N** = 10.
+# (didn't use it - just a small note that can be used for K-fold validation later)
 
-# In[ ]:
+# In[244]:
 
 
-X_copy = pd.DataFrame(X, copy=True)
+X_copy = pd.DataFrame(X_prepared, copy=True)
 subsets = []
 amount = int(len(X_copy) / 10)
 
@@ -193,153 +131,177 @@ for x in range(0, 10):
     X_copy.drop(subsets[x].index, inplace=True)
 
 
-# Now we have **10** random **subsets** formed from the original set. The next step is to implement the classifier. 
+# # Implementing Decision Tree Regressor (ID3 type)
 
-# # Implementing Decision Tree (entropy)
-
-# *GridSearch* that was used in a solution using scikit-learn showed that *entropy-based* solver gives better results for our problem than *gini-based*. So ***entropy-based*** solver will be used here.
-
-# In[ ]:
+# In[311]:
 
 
-def entropy(data, attr):
-#     storing the amount of each value (use bins for continous values here - TODO)
-    ser = data.groupby(attr).size().to_dict()
+class DecisionTree:
+    """class containing methods for tree fitting and prediction making"""
     
-    entries = len(data)
-    entropy = 0.0  # default value
-    for key in ser.keys():
-#         counting the probability of the value to occur
-        probability = float(ser[key])/entries
-#     counting the entropy of the value by known formula
-        entropy -= probability * math.log(probability,2)
-    return entropy
-
-
-# In[ ]:
-
-
-entropy(X, 'borough_Bronx')
-
-
-# In[ ]:
-
-
-def split(data, colname, value):
-#     returns dataframe without given colname which contains only given value of this colname
-    return data.loc[data[colname] == value, data.columns.drop(colname)]
-
-
-# In[ ]:
-
-
-def choose(data):
-#     helps to choose the best attribute for classification
-
-#     TODO improve to use bins!
-# using infogain term here - may be wrong, for continous data it's recommended to use
-# gain_ratio, gain_ratio(data, attr) = gain(data, attr) / split_info(data, attr), where
-# gain (data, attr) = entropy(data)(that means taking target attr as attr argument) - entropy(data, attr) and
-# split_info(data, attr) = entropy(data, attr). TODO
-
-    minimum_entropy = entropy(data, data.columns[0])
-    best_attr = -1
+    def __init__(self):
+        self._binned_attrs = {}
+        self.tree_model = None
+        self.data = None
+        self.Y = None
     
-    values_map = {col: data.groupby(col).size().to_dict() for col in data.columns}
+    def fit(self, X, Y):
+        self.Y = Y
+        self.data = X.copy()
+        data = self.data
+        for attr in self.data:
+            if len(self.data[attr].unique()) > 30:
+                self.data[attr], self._binned_attrs[attr] = bin_data(data, attr)
+        self.tree_model = self._fit_tree(data)
     
-    entropies = []
+    def predict(self, X):
+        def find_bins(value, binned_map):
+            if value < binned_map[0]['high']:
+                return 0
+            for bin_num, bin_def in binned_map.items():
+                low = bin_def['low']
+                high = bin_def['high']
+                if low < value <= high:
+                    return bin_num
+            return max(binned_map.keys())
+
+        data = X.copy()
+        for attr, bins in self._binned_attrs.items():
+            data[attr] = data[attr].apply(lambda x: find_bins(x, bins))
+        
+        answers = []
+        for line_idx, line in data.to_dict('index').items():
+            targets = []
+            models = [self.tree_model]
+            while models:
+                model = models.pop()
+                if model['type'] == 'leaf':
+                    targets.extend(model['targets'])
+                    continue
+                attr = model['attr_name']
+                attr_value = line[attr]
+                if attr_value in model['choices']:
+                    models.append(model['choices'][attr_value])
+                else:
+                    # print(f'Skipping {attr_value} of {attr} for line {line_idx}')
+                    models.extend(model['choices'].values())
+            vals = self.Y[targets].values
+            vals_avg = sum(vals) / len(vals)
+            vals_stddev = self._standard_deviation(vals)
+            answers.append(int(vals_avg))
+        return np.array(answers)
     
-    for attr in values_map:
-        new_entropy = 0.0
-        for value in values_map[attr]:
-#             data without attr with specific value of this attr only 
-            new_data = split(X_copy, attr, value)
-            probability = new_data.shape[0]/float(data.shape[0])
-            new_entropy += probability * entropy(data, attr)
-        entropies.append(dict(attr=attr, info_amount=new_entropy))
+    def _standard_deviation(self, arr):
+        avg = sum(arr) / len(arr)
+        stddev = np.sqrt(sum((x - avg)**2 for x in arr) / len(arr))
+        return stddev
+
+    def _variation_coef(self, Y):
+        stddev = self._standard_deviation(Y)
+        avg = sum(Y) / len(Y)
+        return stddev / avg
+
+    def _split(self, data, colname, value):
+    # returns dataframe without given colname which contains only given value of this colname
+        return data.loc[data[colname] == value, data.columns.drop(colname)]
+
+    def _choose(self, data):
+        def filtered_stddev(attr, value):
+            col = data[attr]
+            lines_with_value = data[col == value].index
+            probability = len(lines_with_value) / len(data)
+            return probability * self._standard_deviation(self.Y[lines_with_value].values)
+        def biased_stddev(attr):
+            return sum(filtered_stddev(attr, value) for value in data[attr].unique())
+        
+        best_attr, lowest_biased_stddev = min([(attr, biased_stddev(attr)) for attr in data.columns], key=operator.itemgetter(1))
     
-    print(entropies)
-#     takes attr with minimum entropy as the best one
-    best_attr = min(entropies, key=operator.itemgetter('info_amount'))
-    print(f'best attribute is now {best_attr}')
-    return best_attr['attr']
+        return best_attr
+
+    def _majority(self, classset):
+        count = {}
+        for attr in classset:
+            if attr not in count.keys():
+                count[attr] = 0
+            count[attr] += 1
+        sorted_class_count = sorted(count.items(), key=operator.itemgetter(1), reverse=True)
+        return sorted_class_count[0][0]
+
+    def _fit_tree(self, data, depth=0):
+        # if only one entry - return it
+        # if variation coef is too small - return data
+        if depth > 30             or data.shape[0] == 1             or abs(self._variation_coef(self.Y[data.index].values) - 0.10) < 1e-10             or data.shape[1] == 0:
+            return dict(type='leaf', targets=data.index)
+        # if only one column left - return the majority of it's values (TODO improve function)
+        if data.columns.size == 1:
+            best_attr = data.columns[0]
+        else:
+            best_attr = self._choose(data)
+
+        uniques = data[best_attr].unique()
+        # else choose best feat, create a node, go recursively
+        return dict(type='node', attr_name=best_attr, choices={
+            value: self._fit_tree(self._split(data, best_attr, value), depth + 1) for value in uniques
+        })
 
 
-# In[ ]:
+# In[300]:
 
 
-X_copy = pd.DataFrame(X, copy=True)
+dt = DecisionTree()
+
+x_small = X_prepared.iloc[:100]
+y_small = Y[:100]
+
+dt.fit(x_small, y_small)
 
 
-# In[ ]:
+# In[309]:
 
 
-choose(X_copy)
+dt_final = DecisionTree()
 
 
-# In[ ]:
+# In[310]:
 
 
-def majority(classset):
-#     returns the class that has the most votes
-# TODO change implementation for regressor! use bins!
-    count = {}
-    for attr in classset:
-        if vote not in count.keys(): count[vote] = 0
-        count[vote] += 1
-    sorted_class_count = sorted(count.iteritems(), key=operator.itemgetter(1), reverse=True)
-    return sorted_class_count[0][0]
+dt_final.fit(X_prepared, Y)
 
 
-# In[ ]:
+# In[314]:
 
 
-def tree(data, labels):
-#     if only one entry - return it
-    if data.shape[0] == 1:
-        return data.loc[:0]
-#     if only one column left - return the majority of it's values (TODO improve function)
-    if data.columns.size == 1:
-        return majority(data)
-#     else choose best feat, create a node, go recursively.
-    best_feat = choose(data)
-    print(labels)
-    the_tree = {best_feat:{}}
-    labels.remove(best_feat)
-    print(best_feat)
-    feat_values = data[best_feat]
-    unique_vals = feat_values.unique()
-    for value in unique_vals:
-        print(f'\n {value} ({len(labels)} feats remaining)')
-        sublabels = labels.copy()
-        the_tree[best_feat][value] = tree(split(data, best_feat, value), sublabels)
-    return the_tree
+test_X = pd.read_csv('./data/testX.csv')
 
 
-# In[ ]:
+# In[315]:
 
 
-X_copy = pd.DataFrame(X, copy=True)
+test_prep = prepare_data(test_X)
 
 
-# In[ ]:
+# In[317]:
 
 
-tree(X_copy, set(X_copy))
+test_predicted = dt_final.predict(test_prep)
 
 
-# In[ ]:
+# In[319]:
 
 
-entropy_map = {}
-for feat in set(X_copy):
-  entropy_map[feat] = entropy(X_copy, feat)
+test_predicted
 
 
-# In[ ]:
+# In[327]:
 
 
-entropy_map
+dddd = pd.DataFrame([test_X['id'], pd.Series(test_predicted, name='pickups')]).T
+
+
+# In[329]:
+
+
+dddd.to_csv('./data/testY.csv', index=False)
 
 
 # In[ ]:
