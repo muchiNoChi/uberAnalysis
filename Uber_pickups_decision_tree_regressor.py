@@ -102,33 +102,17 @@ def prepare_data(dataset):
     return dataset_copy
 
 
-# In[9]:
+# In[103]:
 
 
 X_prepared = prepare_data(X_data)
 
 
-# In[10]:
+# In[104]:
 
 
 merged = pd.merge(X_data, Y_data, on='id')
 Y = merged['pickups']
-
-
-# Splitting dataset into 10 equal pieces:
-# 
-# (didn't use it - just a small note that can be used for K-fold validation later)
-
-# In[244]:
-
-
-X_copy = pd.DataFrame(X_prepared, copy=True)
-subsets = []
-amount = int(len(X_copy) / 10)
-
-for x in range(0, 10):
-    subsets.append(X_copy.sample(n=amount))
-    X_copy.drop(subsets[x].index, inplace=True)
 
 
 # # Implementing Decision Tree Regressor (ID3 type)
@@ -263,12 +247,47 @@ dt.fit(x_small, y_small)
 train_predicted = dt.predict(X_prepared)
 
 
-# In[65]:
+# In[80]:
 
 
 res = pd.DataFrame([Y_data['pickups'], pd.Series(train_predicted, name='predicted_pickups')]).T
 res = res[-100:]
-res.plot()
+res.plot(figsize=(14,8))
+
+
+# Splitting dataset into 10 equal pieces:
+# 
+
+# In[118]:
+
+
+def K_fold(X, Y, folds=2):
+    copy = pd.DataFrame(X, copy=True)
+    subsets = []
+    amount = int(len(copy) / folds)
+    folded_Ys = []
+
+    for i in range(0, folds):
+        subsets.append(copy.sample(n=amount))
+        copy.drop(subsets[i].index, inplace=True)
+
+        fold_tree = DecisionTree(max_depth=30)
+        X_copy = pd.DataFrame(X, copy=True)
+        Y_copy = pd.DataFrame(Y, copy=True)
+        subset_for_prediction = subsets[i]
+        subset_for_training = X_copy.drop(subsets[i].index)
+        Y_for_training = Y_copy.drop(subsets[i].index)['pickups']
+        fold_tree.fit(subset_for_training, Y_for_training)
+        fold_predicted = fold_tree.predict(subset_for_prediction)
+        folded_Ys.append(pd.DataFrame([subsets[i].index, pd.Series(fold_predicted, name=f'pred{i}')]).T)
+#         TODO calculate errors by each prediction and return average error
+    merged_result = pd.concat(folded_Ys)
+
+
+# In[ ]:
+
+
+K_fold(X_prepared, Y_data, folds=4)
 
 
 # In[66]:
