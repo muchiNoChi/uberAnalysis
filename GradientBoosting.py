@@ -3,23 +3,21 @@
 #learning_rate - size of step
 #train_features - features used by tree
 #depth - tree depth
+import random
 
 import numpy as np
 import pandas as pd
 from datetime import datetime
 import math
-import operator
 
-import xgboost as xgboost
-from scipy.special import expit
-from sklearn.datasets import make_regression
-from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split, GridSearchCV, KFold
-from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-from sklearn.base import BaseEstimator
+from sklearn.tree import DecisionTreeRegressor
 from sklearn.utils.validation import check_X_y
-from sklearn.utils.random import check_random_state
-from sklearn.metrics import make_scorer, accuracy_score, roc_auc_score, mean_squared_error
+from sklearn.metrics import make_scorer, accuracy_score
+
+import BaseTree
+
+random.seed(111)
 
 X_data = pd.read_csv('all/trainX.csv')
 Y_data = pd.read_csv('all/trainY.csv')
@@ -65,9 +63,7 @@ merged = pd.merge(X_data, Y_data, on=['id'])
 Y = merged['pickups'].values
 
 X = X.astype(float)
-X.head()
 Y = Y.astype(float)
-#Y
 
 num_test = 0.20
 X_train, X_valid, y_train, y_valid = train_test_split(X, Y, test_size=num_test, random_state=23)
@@ -75,20 +71,64 @@ X_train, X_valid, y_train, y_valid = train_test_split(X, Y, test_size=num_test, 
 
 def _estimate_tree(leaf_values, X):
     """taking indices of leaves and return the corresponding value for each event"""
-    leaves = transform(X, sigmoid)
+    leaves = transform(X, LogisticLoss.sigmoid)
     return leaf_values[leaves]
 
+
 def transform(val, func):
-    #Apply logistic func to the output
+    """Apply logistic func to the output"""
     return func(val)
 
-def sigmoid(z):
-    return 1.0/(1.0 + np.exp(-1.0 * z))
 
-def sigmoidGradient(y, y_pred):
-    #return np.matmul(sigmoid(-actual*predicted), 1 - sigmoid(-actual*predicted))
-    return y*sigmoid(-y*y_pred)
-    #return sigmoid(-y*y_pred)*(1 - sigmoid(-y*y_pred))
+class LogisticLoss:
+    def __init__(self, regularization=1.0):
+        self.regularization = regularization
+
+    @staticmethod
+    def sigmoid(z):
+        return 1.0/(1.0 + np.exp(-1.0 * z))
+
+    @staticmethod
+    def gradient(y, y_pred):
+        #return np.matmul(sigmoid(-actual*predicted), 1 - sigmoid(-actual*predicted))
+        #return y*LogisticLoss.sigmoid(-y*y_pred)
+        return LogisticLoss.sigmoid(-y*y_pred)*(1 - LogisticLoss.sigmoid(-y*y_pred))
+
+    def approximate(self, y, y_pred):
+        """Approximate leaf value."""
+        return self.gradient(y, y_pred).sum() / (self.hessian(y_pred).sum() + self.regularization)
+
+    def hessian(self, y_pred):
+        return self.sigmoid(y_pred) * (1 - self.sigmoid(y_pred))
+
+    def gain(self, y, y_pred):
+        """Calculate gain for split search."""
+        nominator = self.gradient(y, y_pred).sum() ** 2
+        denominator = (self.hessian(y_pred).sum() + self.regularization)
+        return 0.5 * (nominator / denominator)
+
+
+class ListSqLoss:
+    def __init__(self, regularization=1.0):
+        self.regularization = regularization
+
+    @staticmethod
+    def gradient(y, y_pred):
+        return y - y_pred
+
+    def hessian(self, y):
+        return np.ones_like(y)
+
+    def approximate(self, y, y_pred):
+        """Approximate leaf value."""
+        return self.gradient(y, y_pred).sum() / (self.hessian(y_pred).sum() + self.regularization)
+
+    def gain(self, y, y_pred):
+        """Calculate gain for split search."""
+        nominator = self.gradient(y, y_pred).sum() ** 2
+        denominator = (self.hessian(y).sum() + self.regularization)
+        return 0.5 * (nominator / denominator)
+
 
 def run_search(X, Y, clf, parameters):
         scorer = make_scorer(accuracy_score)
@@ -97,109 +137,51 @@ def run_search(X, Y, clf, parameters):
         grid_obj = grid_obj.fit(X, Y)
         return grid_obj.best_estimator_
 
-def std_agg(cnt, s1, s2): return math.sqrt((s2/cnt) - (s1/cnt)**2)
 
 class GradientBoosting:
-    def __init__(self, n_estimators, subsample, train_features, depth, learning_rate=0.01, random_state=None):
+    def __init__(self, n_estimators, loss_func, train_features=None, subsample=1, depth=6, tree=None, eta=0.2,
+                 random_state=None):
         self.n_estimators = n_estimators
         self.subsample = subsample
-        self.learning_rate = learning_rate
+        self.eta = eta
         self.train_features = train_features
         self.depth = depth
-        self.loss_func = None
+        self.loss_func = loss_func
         self.trees = []
         self.random_state = random_state
+        self.tree = tree
 
     def fit(self, X, y):
-        #self.estimators = []
-        #self.scores = []
-        #self.n_features = X.shape[1]
-        #x = X
-        #yi = y
         X, y = check_X_y(X, y)
         n_samples = X.shape[0]
-        n_inbag = int(n_samples/self.subsample)
-        #for logistic loss convert labels from {0, 1} to {-1, 1}
-        #y = (y * 2) - 1
         y_pred = np.zeros(n_samples)
         #y_pred = np.full(n_samples, np.mean(y))
 
         for n in range(self.n_estimators):
-            #Least squares loss grad
-            # theta = theta + alpha * grad - alpha * C * theta
-            #error
-            #residuals = std_agg(n_samples, y, y_pred)
-            #residuals = sigmoidGradient(y, y_pred)
+            residuals = self.loss_func.gradient(y, y_pred)
+            if self.tree is None:
+                new_tree = DecisionTreeRegressor(criterion='mse', min_samples_leaf=5, max_features=self.train_features,
+                                                 max_depth=self.depth, min_samples_split=self.subsample)
+            else:
+                new_tree = self.tree
+            new_tree.fit(X, residuals)
+            y_pred = y_pred + self.eta*new_tree.predict(X)
+            self.trees.append(new_tree)
 
-            #residuals = sigmoidGradient(y, y_pred)
-            residuals = y - y_pred
-
-            tree = DecisionTreeRegressor(criterion='mse',
-                                         min_samples_leaf=5,
-                                         max_features=self.train_features,
-                                         max_depth=self.depth,
-                                         min_samples_split=self.subsample)
-            tree.fit(X, residuals)
-            y_pred = tree.predict(X) + self.learning_rate*sigmoidGradient(y, y_pred)/n_samples - self.learning_rate*tree.predict(X)
-            #Logistic loss
-            #y * expit(-y* y_pred)
-
-            #tree = DecisionTreeClassifier(criterion='gini',
-            #                                               min_samples_leaf=5,
-            #                                               max_features=self.train_features,
-            #                                               max_depth=self.depth,
-            #                                               min_samples_split=self.subsample)
-
-            #best_clfs = {}
-
-            #best_clfs['DecisionTreeClassifier'] = run_search(
-             #   X, residuals, DecisionTreeClassifier(),
-              #  {
-              #      'criterion': ['entropy', 'gini'],
-              #      'min_samples_leaf': [3, 5],
-              #      'max_depth': [3, 4],
-              #      'min_samples_split': [3, 5, 8]
-              #  })
-            #tree = best_clfs['DecisionTreeClassifier']
-
-            #rand = check_random_state(self.random_state)
-            #train_indices = rand.choice(n_samples, size=n_inbag, replace=False)
-            #tree.fit(X, targets)
-
-            #tree.fit(X, residuals)
-            #aa = tree.apply(X[train_indices])
-            #predictions = tree.predict(X)
-            #y_pred += predictions
-            #y_pred += self.learning_rate*sigmoidGradient(y, y_pred) - self.learning_rate*y_pred
-            #var = _estimate_tree(tree.apply(X[train_indices]), X[train_indices])
-            #theta = theta + alpha * grad - alpha * C * theta
-            #y_pred = predictions + self.learning_rate * grad - self.learning_rate*predictions
-            #y_pred = predictions - sigmoidGradient(y, predictions)
-            self.trees.append(tree)
-
-    #predict classes for each event
+    """predict classes for each event"""
     def predict(self, X):
         y_pred = np.zeros(X.shape[0])
 
         for i, tree in enumerate(self.trees):
-            y_pred += self.learning_rate * tree.predict(X)
+            y_pred += self.eta * tree.predict(X)
         return y_pred
 
+    """predict probabilities for each event"""
+    def predict_probabilities(self, X, loss_func):
+        return transform(self.predict(X), loss_func)
 
-        #predict probabilities for each event
-    def predict_probabilities(self, X):
-        return transform(self.predict(X), sigmoid)
 
-#class GradientBoostingClassifier(GradientBoosting):
- #   def fit(self, X, y=None):
- #       # Convert labels from {0, 1} to {-1, 1}
-  #      y = (y * 2) - 1
-  #      self.loss = LogisticLoss()
-#super(GradientBoostingClassifier, self).fit(X, y)
-#m, n = X.shape
-#h = sigmoid(np.matmul(np.matmul(X, np.zeros(n)), Y.T))
-#grad = np.matmul(Y, X * (1 - h)) / m
-model = GradientBoosting(n_estimators=1000, depth=5, train_features='sqrt', subsample=5)
+model = GradientBoosting(n_estimators=100, depth=5, train_features='sqrt', subsample=5, loss_func=ListSqLoss)
 
 model.fit(X, Y)
 
@@ -219,21 +201,29 @@ def total_trasform(X):
     del X['id']
     return X
 
+
 X_target = pd.read_csv('all/testX.csv')
 prediction = pd.DataFrame()
 prediction['id'] = [str(item) for item in X_target['id']]
 X_target = total_trasform(X_target)
-#predict_res = model.predict_probabilities(X_target)
 predict_res = model.predict(X_target)
-#print('regression, mse: %s'% mean_squared_error(y_test.flatten(), predictions.flatten()))
 prediction['pickups'] = predict_res
 prediction.to_csv('all/baseline.csv', index=None)
 
 
-X_t = pd.read_csv('all/trainX.csv')
-pred = pd.DataFrame()
-pred['id'] = [str(item) for item in X_t['id']]
-X_t = total_trasform(X_t)
-pred_res = model.predict(X_t)
-pred['pickups'] = pred_res
-pred.to_csv('all/out.csv', index=None)
+def mse_criterion(y, splits):
+    y_mean = np.mean(y)
+    return -sum([np.sum((split - y_mean) ** 2) * (float(split.shape[0]) / y.shape[0]) for split in splits])
+
+
+base_tree = BaseTree.Tree(regression=True, criterion=mse_criterion, loss=ListSqLoss, max_depth=5, max_features=4)
+model_2 = GradientBoosting(n_estimators=200, loss_func=ListSqLoss, tree=base_tree)
+model_2.fit(X, Y)
+
+X_target_2 = pd.read_csv('all/testX.csv')
+prediction_2 = pd.DataFrame()
+prediction_2['id'] = [str(item) for item in X_target_2['id']]
+X_target_2 = total_trasform(X_target_2)
+predict_res_2 = model_2.predict(X_target_2)
+prediction_2['pickups'] = predict_res_2
+prediction.to_csv('all/baseline_2.csv', index=None)
